@@ -5,13 +5,16 @@ struct AgentRule {
 }
 
 static RULES: &[AgentRule] = &[
-    AgentRule { keyword: "cursor",   display: "Cursor" },
-    AgentRule { keyword: "claude",   display: "Claude Code" },
-    AgentRule { keyword: "windsurf", display: "Windsurf" },
-    AgentRule { keyword: "aider",    display: "Aider" },
-    AgentRule { keyword: "amazonq",  display: "Amazon Q" },
-    // VS Code itself (Copilot/Cline/Continue share the same process; subdivide in P2)
-    AgentRule { keyword: "code",     display: "VS Code" },
+    // More specific rules must come before broader ones (first match wins)
+    AgentRule { keyword: "opencode",  display: "OpenCode" },
+    AgentRule { keyword: "copilot",   display: "GitHub Copilot" },
+    AgentRule { keyword: "cursor",    display: "Cursor" },
+    AgentRule { keyword: "claude",    display: "Claude Code" },
+    AgentRule { keyword: "windsurf",  display: "Windsurf" },
+    AgentRule { keyword: "aider",     display: "Aider" },
+    AgentRule { keyword: "amazonq",   display: "Amazon Q" },
+    // Broad VS Code rule last — matches Code Helper, Code.app, etc.
+    AgentRule { keyword: "code",      display: "VS Code" },
 ];
 
 /// Match a process name against agent rules and return the display name; returns None if no rule matches.
@@ -35,6 +38,19 @@ mod tests {
     #[test]
     fn identifies_claude() {
         assert_eq!(identify("claude"), Some("Claude Code"));
+    }
+
+    #[test]
+    fn identifies_opencode() {
+        assert_eq!(identify("opencode"), Some("OpenCode"));
+        // must NOT be misidentified as VS Code
+        assert_ne!(identify("opencode"), Some("VS Code"));
+    }
+
+    #[test]
+    fn identifies_copilot() {
+        assert_eq!(identify("GitHub Copilot for Xcode Extension"), Some("GitHub Copilot"));
+        assert_eq!(identify("copilot"), Some("GitHub Copilot"));
     }
 
     #[test]
