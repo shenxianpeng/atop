@@ -67,12 +67,18 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     } else {
         Color::Blue
     };
+    let swap_label = if app.swap_total_mb > 0 {
+        format!("  swap {}/{}MB", app.swap_used_mb, app.swap_total_mb)
+    } else {
+        String::new()
+    };
     let mem_gauge = Gauge::default()
         .label(format!(
-            "MEM  {:5.1}%  {}/{}MB",
+            "MEM  {:5.1}%  {}/{}MB{}",
             mem_ratio * 100.0,
             app.mem_used_mb,
-            app.mem_total_mb
+            app.mem_total_mb,
+            swap_label,
         ))
         .ratio(mem_ratio)
         .gauge_style(Style::default().fg(mem_color));

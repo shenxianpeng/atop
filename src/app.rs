@@ -80,6 +80,8 @@ pub struct App {
     pub cpu_cores: Vec<f32>,
     pub mem_used_mb: u64,
     pub mem_total_mb: u64,
+    pub swap_used_mb: u64,
+    pub swap_total_mb: u64,
     pub processes: Vec<ProcessEntry>,
     pub sort_key: SortKey,
     pub refresh_interval: Duration,
@@ -100,6 +102,8 @@ impl App {
             cpu_cores: Vec::new(),
             mem_used_mb: 0,
             mem_total_mb: 0,
+            swap_used_mb: 0,
+            swap_total_mb: 0,
             processes: Vec::new(),
             sort_key: SortKey::Cpu,
             refresh_interval: Duration::from_secs(1),
@@ -136,6 +140,8 @@ impl App {
         self.cpu_cores = self.sys.cpus().iter().map(|c| c.cpu_usage()).collect();
         self.mem_used_mb = self.sys.used_memory() / 1024 / 1024;
         self.mem_total_mb = self.sys.total_memory() / 1024 / 1024;
+        self.swap_used_mb = self.sys.used_swap() / 1024 / 1024;
+        self.swap_total_mb = self.sys.total_swap() / 1024 / 1024;
 
         let snapshots = process::collect(&self.sys);
         self.processes = snapshots.iter().map(ProcessEntry::from).collect();
