@@ -18,7 +18,7 @@ pub fn draw(frame: &mut Frame, app: &App, table_state: &mut TableState) {
         .constraints([
             Constraint::Length(5),  // summary
             Constraint::Min(0),     // process table
-            Constraint::Length(6),  // API call panel
+            Constraint::Length(7),  // API call panel
             Constraint::Length(1),  // status bar
         ])
         .split(area);
@@ -87,7 +87,7 @@ fn draw_process_table(
 ) {
     let cpu_label = if app.sort_key == SortKey::Cpu { "CPU% ▼" } else { "CPU%" };
     let mem_label = if app.sort_key == SortKey::Mem { "MEM(MB) ▼" } else { "MEM(MB)" };
-    let col_labels = ["PID", "NAME", "AGENT", cpu_label, mem_label, "UPTIME"];
+    let col_labels = ["PID", "NAME", "AGENT", cpu_label, mem_label, "RD_KB/s", "WR_KB/s", "UPTIME"];
     let header_cells = col_labels
         .into_iter()
         .map(|h| Cell::from(h).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
@@ -108,6 +108,8 @@ fn draw_process_table(
                 Cell::from(p.agent_type.unwrap_or("-")).style(agent_style),
                 Cell::from(format!("{:.1}", p.cpu_percent)),
                 Cell::from(p.mem_mb.to_string()),
+                Cell::from(format_io(p.disk_read_kb_s)),
+                Cell::from(format_io(p.disk_written_kb_s)),
                 Cell::from(p.uptime.as_str()),
             ])
         })
@@ -116,12 +118,14 @@ fn draw_process_table(
     let table = Table::new(
         rows,
         [
-            Constraint::Length(7),
-            Constraint::Min(20),
-            Constraint::Length(16),
-            Constraint::Length(7),
-            Constraint::Length(9),
-            Constraint::Length(10),
+            Constraint::Length(7),   // PID
+            Constraint::Min(20),     // NAME
+            Constraint::Length(16),  // AGENT
+            Constraint::Length(7),   // CPU%
+            Constraint::Length(9),   // MEM(MB)
+            Constraint::Length(8),   // RD_KB/s
+            Constraint::Length(8),   // WR_KB/s
+            Constraint::Length(10),  // UPTIME
         ],
     )
     .header(header)
@@ -143,8 +147,8 @@ fn draw_process_table(
 fn draw_network_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     // Title row: show a different hint depending on capture status
     let title = match &app.network_status {
-        NetworkStatus::Active => " API Calls (pcap active) ",
-        NetworkStatus::Error(_) => " API Calls (no capture) ",
+        NetworkStatus::Active => " AI API Traffic (pcap active) ",
+        NetworkStatus::Error(_) => " AI API Traffic (no capture) ",
     };
 
     let block = Block::default()
@@ -179,20 +183,25 @@ fn draw_network_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
     if !app.network_entries.is_empty() {
         lines.push(Line::from(vec![
             Span::styled(
-                format!("{:<7} {:<16} {:<35} {:>8}", "PID", "AGENT", "DOMAIN", "REQUESTS"),
+                format!(
+                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8}",
+                    "PID", "AGENT", "DOMAIN", "CONNS", "RX_RECS", "RX_KB"
+                ),
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
         ]));
-        // One row per (pid, domain); show at most inner.height-1 rows
-        let max_rows = inner.height.saturating_sub(1) as usize;
+        // One row per (pid, domain); show at most inner.height-2 rows (header + border)
+        let max_rows = inner.height.saturating_sub(2) as usize;
         for entry in app.network_entries.iter().take(max_rows) {
             lines.push(Line::from(vec![Span::styled(
                 format!(
-                    "{:<7} {:<16} {:<35} {:>8}",
+                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8}",
                     entry.pid,
                     truncate(&entry.agent_name, 16),
                     entry.domain,
-                    entry.request_count,
+                    entry.connections,
+                    entry.rx_records,
+                    entry.rx_bytes / 1024,
                 ),
                 Style::default().fg(Color::Cyan),
             )]));
@@ -217,6 +226,11 @@ fn draw_status_bar(frame: &mut Frame, area: ratatui::layout::Rect) {
     let bar = ratatui::widgets::Paragraph::new(spans)
         .style(Style::default().bg(Color::DarkGray));
     frame.render_widget(bar, area);
+}
+
+/// Format a KB/s disk I/O value: show "-" when zero to reduce visual noise.
+fn format_io(kb_s: u64) -> String {
+    if kb_s == 0 { "-".to_string() } else { kb_s.to_string() }
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {

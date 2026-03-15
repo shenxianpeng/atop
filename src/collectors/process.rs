@@ -18,6 +18,10 @@ pub struct ProcessSnapshot {
     pub cpu_percent: f64,
     pub memory_bytes: u64,
     pub run_time_secs: u64,
+    /// Bytes read from disk since the last sysinfo refresh (delta, not cumulative)
+    pub disk_read_bytes: u64,
+    /// Bytes written to disk since the last sysinfo refresh (delta, not cumulative)
+    pub disk_written_bytes: u64,
     // Verification context injected at collection time to avoid global-state access in verify()
     pub cpu_core_count: usize,
     pub total_memory_bytes: u64,
@@ -31,6 +35,8 @@ impl ProcessSnapshot {
         cpu_percent: f64,
         memory_bytes: u64,
         run_time_secs: u64,
+        disk_read_bytes: u64,
+        disk_written_bytes: u64,
         cpu_core_count: usize,
         total_memory_bytes: u64,
     ) -> Self {
@@ -43,6 +49,8 @@ impl ProcessSnapshot {
             cpu_percent,
             memory_bytes,
             run_time_secs,
+            disk_read_bytes,
+            disk_written_bytes,
             cpu_core_count,
             total_memory_bytes,
             id: SNAPSHOT_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -105,12 +113,15 @@ pub fn collect(sys: &System) -> Vec<ProcessSnapshot> {
             let mut name = p.name().to_string_lossy().to_string();
             // Per spec: truncate name to 256 bytes
             name.truncate(256);
+            let disk = p.disk_usage();
             ProcessSnapshot::new(
                 p.pid().as_u32(),
                 name,
                 p.cpu_usage() as f64,
                 p.memory(),
                 p.run_time(),
+                disk.read_bytes,
+                disk.written_bytes,
                 cpu_core_count,
                 total_memory_bytes,
             )
@@ -148,6 +159,8 @@ impl ProcessSnapshot {
             cpu_percent: cpu,
             memory_bytes: mem,
             run_time_secs: 0,
+            disk_read_bytes: 0,
+            disk_written_bytes: 0,
             cpu_core_count: cores,
             total_memory_bytes: total_mem,
             id: 9999,

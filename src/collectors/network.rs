@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::net::IpAddr;
+use std::net::ToSocketAddrs;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::thread;
@@ -14,12 +16,23 @@ const AI_DOMAINS: &[&str] = &[
     "generativelanguage.googleapis.com",
 ];
 
-/// API call statistics per (pid, domain) pair
+/// Aggregated traffic metrics per (pid, domain) pair
+#[derive(Default, Clone)]
+pub struct ApiStats {
+    /// Number of TLS ClientHellos observed (new connection handshakes)
+    pub connections: u64,
+    /// TLS Application Data records received from the server (proxy for API responses)
+    pub rx_records: u64,
+    /// Total payload bytes received from the server
+    pub rx_bytes: u64,
+}
+
+/// Snapshot entry returned by NetworkCollector::snapshot()
 #[derive(Clone)]
 pub struct ApiCallEntry {
     pub pid: u32,
     pub domain: &'static str,
-    pub request_count: u64,
+    pub stats: ApiStats,
 }
 
 #[derive(Clone)]
@@ -30,13 +43,22 @@ pub enum NetworkStatus {
     Error(String),
 }
 
+/// Metadata for a tracked outgoing TLS connection
+struct TrackedConn {
+    pid: u32,
+    domain: &'static str,
+}
+
 struct Inner {
-    /// (pid, domain) → request count
-    entries: HashMap<(u32, &'static str), u64>,
+    /// local_port → connection metadata (populated on ClientHello detection)
+    active_conns: HashMap<u16, TrackedConn>,
+    /// (pid, domain) → traffic metrics
+    stats: HashMap<(u32, &'static str), ApiStats>,
     status: NetworkStatus,
 }
 
-/// Network collector: a background thread captures TLS ClientHellos, extracts SNI, and correlates with processes.
+/// Network collector: a background thread captures TLS traffic bidirectionally,
+/// tracks connections via SNI, and counts incoming Application Data records.
 pub struct NetworkCollector {
     inner: Arc<Mutex<Inner>>,
 }
@@ -44,7 +66,8 @@ pub struct NetworkCollector {
 impl NetworkCollector {
     pub fn new() -> Self {
         let inner = Arc::new(Mutex::new(Inner {
-            entries: HashMap::new(),
+            active_conns: HashMap::new(),
+            stats: HashMap::new(),
             status: NetworkStatus::Active,
         }));
         let inner_clone = Arc::clone(&inner);
@@ -55,16 +78,16 @@ impl NetworkCollector {
         Self { inner }
     }
 
-    /// Snapshot the current API call statistics (returns a clone for the main thread)
+    /// Snapshot the current traffic statistics (returns a clone for the main thread)
     pub fn snapshot(&self) -> Vec<ApiCallEntry> {
         let guard = self.inner.lock().unwrap();
         guard
-            .entries
+            .stats
             .iter()
-            .map(|((pid, domain), count)| ApiCallEntry {
+            .map(|((pid, domain), stats)| ApiCallEntry {
                 pid: *pid,
                 domain,
-                request_count: *count,
+                stats: stats.clone(),
             })
             .collect()
     }
@@ -99,33 +122,100 @@ fn capture_loop(inner: Arc<Mutex<Inner>>) {
         }
     };
 
-    if let Err(e) = cap.filter("tcp dst port 443", true) {
+    // Capture both outgoing (dst 443) and incoming (src 443) TCP traffic
+    if let Err(e) = cap.filter("tcp port 443", true) {
         set_error(&inner, &format!("pcap filter error: {e}"));
         return;
     }
 
     let link = cap.get_datalink();
     let mut port_pid: HashMap<u16, u32> = HashMap::new();
+    // ai_ips: resolved IP addresses for known AI API domains
+    let mut ai_ips: HashMap<IpAddr, &'static str> = HashMap::new();
     // Force an immediate refresh on first run
     let mut last_lsof = Instant::now() - Duration::from_secs(5);
+    let mut last_dns  = Instant::now() - Duration::from_secs(35);
 
     loop {
-        // Refresh the port→PID cache once per second
+        // Re-resolve AI domain IPs every 30 s (handles CDN IP rotation)
+        if last_dns.elapsed() >= Duration::from_secs(30) {
+            ai_ips = resolve_ai_domain_ips();
+            last_dns = Instant::now();
+        }
+
+        // Refresh the port→PID cache once per second; also sweep stale connections
+        // and bootstrap active_conns for pre-existing connections to AI APIs
         if last_lsof.elapsed() >= Duration::from_secs(1) {
-            port_pid = build_port_pid_map();
+            let entries = build_lsof_entries();
+
+            // Rebuild port→pid lookup
+            port_pid = entries.iter().map(|e| (e.local_port, e.pid)).collect();
+
+            if let Ok(mut g) = inner.lock() {
+                // Evict connections whose local port is no longer in the lsof map
+                g.active_conns.retain(|port, _| port_pid.contains_key(port));
+
+                // Bootstrap: for ESTABLISHED connections to known AI API IPs,
+                // insert into active_conns without overwriting live SNI-detected entries
+                for entry in &entries {
+                    if let Some(remote_ip) = entry.remote_ip {
+                        if let Some(&domain) = ai_ips.get(&remote_ip) {
+                            g.active_conns
+                                .entry(entry.local_port)
+                                .or_insert(TrackedConn { pid: entry.pid, domain });
+                        }
+                    }
+                }
+            }
+
             last_lsof = Instant::now();
         }
 
         match cap.next_packet() {
             Ok(packet) => {
-                if let Some((src_port, sni)) = parse_sni(packet.data, link) {
-                    // sni is a String; check whether it matches a known AI API domain
-                    if let Some(&domain) =
-                        AI_DOMAINS.iter().find(|&&d| sni.eq_ignore_ascii_case(d))
-                    {
-                        let pid = port_pid.get(&src_port).copied().unwrap_or(0);
-                        let mut g = inner.lock().unwrap();
-                        *g.entries.entry((pid, domain)).or_insert(0) += 1;
+                let Some(info) = extract_tcp_info(packet.data, link) else { continue };
+
+                let is_outgoing = info.dst_port == 443;
+                let is_incoming = info.src_port == 443;
+
+                // local_port from the perspective of the monitored process
+                let local_port = if is_outgoing { info.src_port } else { info.dst_port };
+
+                // FIN (0x01) or RST (0x04): remove from active tracking (keep historical stats)
+                if info.flags & 0x05 != 0 {
+                    if let Ok(mut g) = inner.lock() {
+                        g.active_conns.remove(&local_port);
+                    }
+                    continue;
+                }
+
+                if is_outgoing {
+                    // Detect new TLS connections via ClientHello SNI
+                    if let Some(sni) = extract_tls_sni(info.payload) {
+                        if let Some(&domain) =
+                            AI_DOMAINS.iter().find(|&&d| sni.eq_ignore_ascii_case(d))
+                        {
+                            let pid = port_pid.get(&local_port).copied().unwrap_or(0);
+                            let mut g = inner.lock().unwrap();
+                            g.active_conns.insert(local_port, TrackedConn { pid, domain });
+                            g.stats.entry((pid, domain)).or_default().connections += 1;
+                        }
+                    }
+                } else if is_incoming {
+                    // Count TLS Application Data records arriving from the AI server
+                    let payload = info.payload;
+                    if payload.len() >= 5 && payload[0] == 0x17 {
+                        let record_len =
+                            u16::from_be_bytes([payload[3], payload[4]]) as u64;
+                        if let Ok(mut g) = inner.lock() {
+                            if let Some(conn) = g.active_conns.get(&local_port) {
+                                let pid = conn.pid;
+                                let domain = conn.domain;
+                                let e = g.stats.entry((pid, domain)).or_default();
+                                e.rx_records += 1;
+                                e.rx_bytes += record_len;
+                            }
+                        }
                     }
                 }
             }
@@ -146,16 +236,24 @@ fn set_error(inner: &Arc<Mutex<Inner>>, msg: &str) {
 
 // ─── port→PID mapping (via lsof) ─────────────────────────────────────────────
 
-/// Build a local-port → PID map using `lsof -nP -iTCP -sTCP:ESTABLISHED`.
+/// A single ESTABLISHED TCP connection as reported by lsof
+struct LsofEntry {
+    local_port: u16,
+    pid: u32,
+    /// Remote IP address (None if parsing failed or address is a hostname)
+    remote_ip: Option<IpAddr>,
+}
+
+/// Parse `lsof -nP -iTCP -sTCP:ESTABLISHED` output into a list of connection entries.
 /// Called infrequently (once per second), so subprocess overhead is acceptable.
-fn build_port_pid_map() -> HashMap<u16, u32> {
-    let mut map = HashMap::new();
+fn build_lsof_entries() -> Vec<LsofEntry> {
+    let mut entries = Vec::new();
     let output = match std::process::Command::new("lsof")
         .args(["-nP", "-iTCP", "-sTCP:ESTABLISHED"])
         .output()
     {
         Ok(o) => o,
-        Err(_) => return map,
+        Err(_) => return entries,
     };
 
     let text = String::from_utf8_lossy(&output.stdout);
@@ -171,12 +269,41 @@ fn build_port_pid_map() -> HashMap<u16, u32> {
             Err(_) => continue,
         };
         let name = cols[8];
+
+        // Split into local and remote parts at "->"
+        let mut halves = name.splitn(2, "->");
+        let local  = halves.next().unwrap_or("");
+        let remote = halves.next().unwrap_or("");
+
         // Take the local endpoint before "->", then extract the port after the last ":"
-        if let Some(local) = name.split("->").next() {
-            if let Some(port_str) = local.rsplit(':').next() {
-                if let Ok(port) = port_str.parse::<u16>() {
-                    map.insert(port, pid);
-                }
+        let local_port: u16 = match local.rsplit(':').next().and_then(|p| p.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Extract remote IP: everything before the last ":" in the remote half.
+        // Handles IPv4 (18.209.60.130:443) and IPv6 ([::1]:443).
+        let remote_ip = remote.rsplit_once(':').and_then(|(ip_part, _)| {
+            let ip_str = ip_part.trim_matches(|c: char| c == '[' || c == ']');
+            ip_str.parse::<IpAddr>().ok()
+        });
+
+        entries.push(LsofEntry { local_port, pid, remote_ip });
+    }
+    entries
+}
+
+// ─── DNS resolution for AI API domains ───────────────────────────────────────
+
+/// Resolve all AI API domain names to their current IP addresses.
+/// Returns a map from IP → domain name for use in connection bootstrapping.
+/// This is called every 30 s to handle CDN IP rotation.
+fn resolve_ai_domain_ips() -> HashMap<IpAddr, &'static str> {
+    let mut map = HashMap::new();
+    for &domain in AI_DOMAINS {
+        if let Ok(addrs) = format!("{domain}:443").to_socket_addrs() {
+            for sa in addrs {
+                map.insert(sa.ip(), domain);
             }
         }
     }
@@ -185,16 +312,19 @@ fn build_port_pid_map() -> HashMap<u16, u32> {
 
 // ─── Raw packet parsing ───────────────────────────────────────────────────────
 
-/// Extract (TCP source port, TLS SNI) from a raw pcap frame.
-fn parse_sni(data: &[u8], link: Linktype) -> Option<(u16, String)> {
-    let (src_port, payload) = extract_tcp_payload(data, link)?;
-    let sni = extract_tls_sni(payload)?;
-    Some((src_port, sni))
+/// Parsed TCP packet info extracted from a raw pcap frame
+struct TcpInfo<'a> {
+    src_port: u16,
+    dst_port: u16,
+    /// TCP flags byte (offset 13 of the TCP header)
+    flags: u8,
+    /// TCP payload (may be empty for pure ACKs)
+    payload: &'a [u8],
 }
 
-/// Strip the link-layer and IP headers and return (TCP source port, TCP payload).
+/// Strip link-layer and IP headers from a raw pcap frame and return TCP metadata.
 /// Supports DLT_EN10MB (1) and BSD loopback (0/108).
-fn extract_tcp_payload(data: &[u8], link: Linktype) -> Option<(u16, &[u8])> {
+fn extract_tcp_info<'a>(data: &'a [u8], link: Linktype) -> Option<TcpInfo<'a>> {
     // Strip the link layer to get IPv4 data
     let ip = match link.0 {
         1 => {
@@ -235,33 +365,38 @@ fn extract_tcp_payload(data: &[u8], link: Linktype) -> Option<(u16, &[u8])> {
 
     // Parse TCP header
     let tcp = &ip[ihl..];
+    if tcp.len() < 20 {
+        return None;
+    }
     let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
+    let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
+    let flags = tcp[13];
     let data_offset = ((tcp[12] >> 4) as usize) * 4;
     if tcp.len() < data_offset {
         return None;
     }
 
-    Some((src_port, &tcp[data_offset..]))
+    Some(TcpInfo { src_port, dst_port, flags, payload: &tcp[data_offset..] })
 }
 
-/// 从 TLS ClientHello 中提取 SNI（server_name 扩展）。
+/// Extract the SNI hostname from a TLS ClientHello record.
 fn extract_tls_sni(payload: &[u8]) -> Option<String> {
-    // TLS 记录层：content_type(1) version(2) length(2)
+    // TLS record layer: content_type(1) version(2) length(2)
     if payload.len() < 5 {
         return None;
     }
     if payload[0] != 0x16 {
-        return None; // Handshake
+        return None; // not a Handshake record
     }
     let record_len = u16::from_be_bytes([payload[3], payload[4]]) as usize;
     if payload.len() < 5 + record_len {
         return None;
     }
 
-    // 握手层：type(1) length(3) body
+    // Handshake layer: type(1) length(3) body
     let hs = &payload[5..5 + record_len];
     if hs.len() < 4 || hs[0] != 0x01 {
-        return None; // ClientHello
+        return None; // not a ClientHello
     }
     let body_len = u32::from_be_bytes([0, hs[1], hs[2], hs[3]]) as usize;
     if hs.len() < 4 + body_len {
@@ -403,5 +538,22 @@ mod tests {
     fn truncated_returns_none() {
         let full = make_client_hello("api.openai.com");
         assert!(extract_tls_sni(&full[..5]).is_none());
+    }
+
+    #[test]
+    fn application_data_record_detected() {
+        // Minimal TLS Application Data record (content_type 0x17)
+        let mut record = vec![0x17u8, 0x03, 0x03]; // type + version
+        let payload_len = 20u16;
+        record.extend_from_slice(&payload_len.to_be_bytes());
+        record.extend_from_slice(&vec![0xabu8; payload_len as usize]); // fake encrypted data
+
+        // Should NOT be parsed as a ClientHello
+        assert!(extract_tls_sni(&record).is_none());
+        // But the content_type check should work
+        assert_eq!(record[0], 0x17);
+        assert!(record.len() >= 5);
+        let detected_len = u16::from_be_bytes([record[3], record[4]]);
+        assert_eq!(detected_len, payload_len);
     }
 }
