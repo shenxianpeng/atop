@@ -16,7 +16,7 @@ pub fn draw(frame: &mut Frame, app: &App, table_state: &mut TableState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),  // summary
+            Constraint::Length(6),  // summary (CPU gauge + MEM gauge + per-core sparkline)
             Constraint::Min(0),     // process table
             Constraint::Length(7),  // API call panel
             Constraint::Length(1),  // status bar
@@ -40,7 +40,7 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)])
         .margin(0)
         .split(inner);
 
@@ -77,6 +77,22 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .ratio(mem_ratio)
         .gauge_style(Style::default().fg(mem_color));
     frame.render_widget(mem_gauge, rows[1]);
+
+    // Per-core CPU sparkline: one Unicode block per core, colored by load
+    let mut spans: Vec<Span> = vec![Span::raw("CORES ")];
+    for &pct in &app.cpu_cores {
+        let block = cpu_block(pct);
+        let color = if pct > 80.0 {
+            Color::Red
+        } else if pct > 50.0 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        spans.push(Span::styled(block, Style::default().fg(color)));
+    }
+    let sparkline = ratatui::widgets::Paragraph::new(Line::from(spans));
+    frame.render_widget(sparkline, rows[2]);
 }
 
 fn draw_process_table(
@@ -226,6 +242,21 @@ fn draw_status_bar(frame: &mut Frame, area: ratatui::layout::Rect) {
     let bar = ratatui::widgets::Paragraph::new(spans)
         .style(Style::default().bg(Color::DarkGray));
     frame.render_widget(bar, area);
+}
+
+/// Map a CPU usage percentage (0–100) to a Unicode block character for sparkline display.
+fn cpu_block(pct: f32) -> &'static str {
+    match pct as u32 {
+        0..=6   => " ",
+        7..=18  => "▁",
+        19..=31 => "▂",
+        32..=43 => "▃",
+        44..=56 => "▄",
+        57..=68 => "▅",
+        69..=81 => "▆",
+        82..=93 => "▇",
+        _       => "█",
+    }
 }
 
 /// Format a KB/s disk I/O value: show "-" when zero to reduce visual noise.

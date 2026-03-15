@@ -76,6 +76,8 @@ pub struct NetworkEntry {
 /// Global application state
 pub struct App {
     pub cpu_percent: f64,
+    /// Per-core CPU usage percentages (0–100 each)
+    pub cpu_cores: Vec<f32>,
     pub mem_used_mb: u64,
     pub mem_total_mb: u64,
     pub processes: Vec<ProcessEntry>,
@@ -95,6 +97,7 @@ impl App {
 
         let mut app = Self {
             cpu_percent: 0.0,
+            cpu_cores: Vec::new(),
             mem_used_mb: 0,
             mem_total_mb: 0,
             processes: Vec::new(),
@@ -130,6 +133,7 @@ impl App {
     fn do_refresh(&mut self) {
         self.sys.refresh_all();
         self.cpu_percent = self.sys.global_cpu_usage() as f64;
+        self.cpu_cores = self.sys.cpus().iter().map(|c| c.cpu_usage()).collect();
         self.mem_used_mb = self.sys.used_memory() / 1024 / 1024;
         self.mem_total_mb = self.sys.total_memory() / 1024 / 1024;
 
