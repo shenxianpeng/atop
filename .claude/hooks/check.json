@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "pattern": "*.rs",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cargo check 2>&1 | head -30",
+            "statusMessage": "Running cargo check..."
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "type": "command",
+        "command": "osascript -e 'display notification \"Task completed\" with title \"Claude Code\"'"
+      }
+    ]
+  }
+}

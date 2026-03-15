@@ -1,0 +1,10 @@
+[package]
+name = "atop"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+sysinfo = "0.33"
+pcap = "2"

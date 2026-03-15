@@ -1,0 +1,9 @@
+# Claude Code related files to ignore
+
+MEMORY.md
+PLAN.md
+SPEC.md
+
+# Added by cargo
+
+/target
