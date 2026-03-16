@@ -6,6 +6,9 @@ use ratatui::{
     Frame,
 };
 
+use crate::storage::RingBuffer;
+use crate::app::SystemSnapshot;
+
 use crate::app::{App, SortKey};
 use crate::collectors::network::NetworkStatus;
 
@@ -49,7 +52,7 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .margin(0)
         .split(inner);
 
-    // CPU gauge
+    // CPU gauge + history sparkline
     let cpu_color = if app.cpu_percent > 80.0 {
         Color::Red
     } else if app.cpu_percent > 50.0 {
@@ -57,13 +60,19 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     } else {
         Color::Green
     };
+    let cpu_row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(22)])
+        .split(rows[0]);
     let cpu_gauge = Gauge::default()
         .label(format!("CPU  {:5.1}%", app.cpu_percent))
         .ratio(app.cpu_percent / 100.0)
         .gauge_style(Style::default().fg(cpu_color));
-    frame.render_widget(cpu_gauge, rows[0]);
+    frame.render_widget(cpu_gauge, cpu_row[0]);
+    let cpu_spark = history_sparkline(&app.history, |s| s.cpu_percent / 100.0, cpu_color);
+    frame.render_widget(Paragraph::new(cpu_spark), cpu_row[1]);
 
-    // Memory gauge
+    // Memory gauge + history sparkline
     let mem_ratio = app.mem_used_mb as f64 / app.mem_total_mb.max(1) as f64;
     let mem_color = if mem_ratio > 0.8 {
         Color::Red
@@ -77,6 +86,10 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     } else {
         String::new()
     };
+    let mem_row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(22)])
+        .split(rows[1]);
     let mem_gauge = Gauge::default()
         .label(format!(
             "MEM  {:5.1}%  {}/{}MB{}",
@@ -87,7 +100,9 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         ))
         .ratio(mem_ratio)
         .gauge_style(Style::default().fg(mem_color));
-    frame.render_widget(mem_gauge, rows[1]);
+    frame.render_widget(mem_gauge, mem_row[0]);
+    let mem_spark = history_sparkline(&app.history, |s| s.mem_ratio, mem_color);
+    frame.render_widget(Paragraph::new(mem_spark), mem_row[1]);
 
     // Load average line
     let (la1, la5, la15) = app.load_avg;
@@ -310,6 +325,32 @@ fn cpu_block(pct: f32) -> &'static str {
 /// Format a KB/s disk I/O value: show "-" when zero to reduce visual noise.
 fn format_io(kb_s: u64) -> String {
     if kb_s == 0 { "-".to_string() } else { kb_s.to_string() }
+}
+
+/// Render a 20-sample sparkline from the history ring buffer.
+/// `extract` maps a snapshot to a ratio in [0.0, 1.0].
+/// The sparkline is right-aligned (padded with spaces when fewer than 20 samples exist).
+fn history_sparkline<'a>(
+    history: &'a RingBuffer<SystemSnapshot>,
+    extract: impl Fn(&SystemSnapshot) -> f64,
+    color: Color,
+) -> Line<'a> {
+    const WIDTH: usize = 20;
+    let samples: Vec<f64> = history.iter().map(|s| extract(s)).collect();
+    let count = samples.len().min(WIDTH);
+    let start = samples.len().saturating_sub(WIDTH);
+    let recent = &samples[start..];
+
+    let mut spans: Vec<Span> = Vec::new();
+    // Pad left with spaces when fewer than WIDTH samples are available
+    if recent.len() < WIDTH {
+        spans.push(Span::raw(" ".repeat(WIDTH - recent.len())));
+    }
+    for &ratio in recent.iter().take(count) {
+        let pct = (ratio * 100.0).clamp(0.0, 100.0) as f32;
+        spans.push(Span::styled(cpu_block(pct), Style::default().fg(color)));
+    }
+    Line::from(spans)
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {

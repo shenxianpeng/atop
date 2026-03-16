@@ -42,6 +42,11 @@ impl<T> RingBuffer<T> {
         self.buf.len()
     }
 
+    /// Iterate over all stored items in chronological order (oldest first)
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.buf.iter().map(|(_, item)| item)
+    }
+
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()

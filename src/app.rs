@@ -4,6 +4,13 @@ use sysinfo::System;
 
 use crate::collectors::network::{ApiCallEntry, NetworkCollector, NetworkStatus};
 use crate::collectors::process::{self, ProcessSnapshot, format_uptime};
+use crate::storage::RingBuffer;
+
+/// One frame of system-wide metrics pushed into the history ring buffer each refresh
+pub struct SystemSnapshot {
+    pub cpu_percent: f64,
+    pub mem_ratio: f64,
+}
 
 /// Sort key for the process table
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -108,6 +115,8 @@ pub struct App {
     pub refresh_interval: Duration,
     pub network_entries: Vec<NetworkEntry>,
     pub network_status: NetworkStatus,
+    /// Historical snapshots for sparkline rendering (last 60 samples ≈ 1 minute @1 fps)
+    pub history: RingBuffer<SystemSnapshot>,
     last_refresh: Instant,
     sys: System,
     net: NetworkCollector,
@@ -131,6 +140,7 @@ impl App {
             refresh_interval: Duration::from_secs(1),
             network_entries: Vec::new(),
             network_status: NetworkStatus::Active,
+            history: RingBuffer::new(60),
             last_refresh: Instant::now(),
             sys,
             net: NetworkCollector::new(),
@@ -212,6 +222,11 @@ impl App {
         self.network_entries.sort_by(|a, b| b.rx_records.cmp(&a.rx_records));
 
         self.network_status = self.net.status();
+
+        // Record history snapshot for sparkline rendering
+        let mem_ratio = self.mem_used_mb as f64 / self.mem_total_mb.max(1) as f64;
+        self.history.push(SystemSnapshot { cpu_percent: self.cpu_percent, mem_ratio });
+
         self.last_refresh = Instant::now();
     }
 
