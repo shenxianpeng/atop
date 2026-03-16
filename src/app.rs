@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use sysinfo::System;
 
+use crate::collectors::agent_sdk::{AgentSdkCollector, SdkEntry, SdkStatus};
 use crate::collectors::gpu::{self, GpuStats};
 use crate::collectors::network::{ApiCallEntry, NetworkCollector, NetworkStatus};
 use crate::collectors::process::{self, ProcessSnapshot, format_uptime};
@@ -116,6 +117,9 @@ pub struct App {
     pub refresh_interval: Duration,
     pub network_entries: Vec<NetworkEntry>,
     pub network_status: NetworkStatus,
+    /// SDK-reported entries (exact token counts from instrumented agents)
+    pub sdk_entries: Vec<SdkEntry>,
+    pub sdk_status: SdkStatus,
     /// Most recent GPU stats (None if not available on this platform/machine)
     pub gpu: Option<GpuStats>,
     /// Historical snapshots for sparkline rendering (last 60 samples ≈ 1 minute @1 fps)
@@ -123,6 +127,7 @@ pub struct App {
     last_refresh: Instant,
     sys: System,
     net: NetworkCollector,
+    sdk: AgentSdkCollector,
 }
 
 impl App {
@@ -143,11 +148,14 @@ impl App {
             refresh_interval: Duration::from_secs(1),
             network_entries: Vec::new(),
             network_status: NetworkStatus::Active,
+            sdk_entries: Vec::new(),
+            sdk_status: SdkStatus::Error(String::new()), // overwritten in first do_refresh
             gpu: None,
             history: RingBuffer::new(60),
             last_refresh: Instant::now(),
             sys,
             net: NetworkCollector::new(),
+            sdk: AgentSdkCollector::new(),
         };
         app.do_refresh();
         app
@@ -226,6 +234,10 @@ impl App {
         self.network_entries.sort_by(|a, b| b.rx_records.cmp(&a.rx_records));
 
         self.network_status = self.net.status();
+
+        // SDK-reported stats (exact token counts from instrumented agents)
+        self.sdk_entries = self.sdk.snapshot();
+        self.sdk_status = self.sdk.status();
 
         // GPU stats (best-effort; runs a subprocess so only do this every ~2 s)
         // We call it on every refresh (1 s interval); the subprocess is fast on most systems.

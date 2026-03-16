@@ -10,18 +10,20 @@ use crate::storage::RingBuffer;
 use crate::app::SystemSnapshot;
 
 use crate::app::{App, SortKey};
+use crate::collectors::agent_sdk::SdkStatus;
 use crate::collectors::network::NetworkStatus;
 
 pub fn draw(frame: &mut Frame, app: &App, table_state: &mut TableState) {
     let area = frame.area();
 
-    // Top-level: summary bar + process table (flex) + network panel + status bar
+    // Top-level: summary bar + process table (flex) + network panel + sdk panel + status bar
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),  // summary (CPU gauge + MEM gauge + per-core sparkline + load avg)
+            Constraint::Length(7),  // summary (CPU/MEM/load/cores/GPU)
             Constraint::Min(0),     // process table
-            Constraint::Length(7),  // API call panel
+            Constraint::Length(7),  // pcap API traffic panel
+            Constraint::Length(5),  // agent SDK panel
             Constraint::Length(1),  // status bar
         ])
         .split(area);
@@ -29,7 +31,8 @@ pub fn draw(frame: &mut Frame, app: &App, table_state: &mut TableState) {
     draw_summary(frame, app, chunks[0]);
     draw_process_table(frame, app, table_state, chunks[1]);
     draw_network_panel(frame, app, chunks[2]);
-    draw_status_bar(frame, chunks[3]);
+    draw_sdk_panel(frame, app, chunks[3]);
+    draw_status_bar(frame, chunks[4]);
 }
 
 fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -322,6 +325,71 @@ fn draw_network_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
             "  ~ output token estimate (rx_bytes÷4); prices approximate",
             Style::default().fg(Color::DarkGray),
         )));
+    }
+
+    let para = Paragraph::new(lines);
+    frame.render_widget(para, inner);
+}
+
+fn draw_sdk_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let socket_path = match &app.sdk_status {
+        SdkStatus::Listening(p) => p.display().to_string(),
+        SdkStatus::Error(_) => String::new(),
+    };
+    let title = " Agent SDK (exact) ";
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    if app.sdk_entries.is_empty() {
+        // Show how to connect; the socket path is shown so users know where to point their SDK
+        lines.push(Line::from(Span::styled(
+            "  No agents connected via SDK (pcap estimates shown above)",
+            Style::default().fg(Color::DarkGray),
+        )));
+        if !socket_path.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  Socket: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(socket_path, Style::default().fg(Color::Yellow)),
+            ]));
+        }
+    } else {
+        // Header
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{:<7} {:<30} {:>12} {:>12} {:>8}",
+                "PID", "MODEL", "IN_TOKENS", "OUT_TOKENS", "LAT_MS"
+            ),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )));
+        let max_rows = inner.height.saturating_sub(1) as usize;
+        let mut entries = app.sdk_entries.clone();
+        // Sort by total output tokens descending (most active agent first)
+        entries.sort_by(|a, b| b.stats.output_tokens_total.cmp(&a.stats.output_tokens_total));
+        for entry in entries.iter().take(max_rows) {
+            let lat_str = if entry.stats.last_latency_ms == 0 {
+                "-".to_string()
+            } else {
+                entry.stats.last_latency_ms.to_string()
+            };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{:<7} {:<30} {:>12} {:>12} {:>8}",
+                    entry.pid,
+                    truncate(&entry.stats.model, 30),
+                    entry.stats.input_tokens_total,
+                    entry.stats.output_tokens_total,
+                    lat_str,
+                ),
+                Style::default().fg(Color::Green),
+            )));
+        }
     }
 
     let para = Paragraph::new(lines);
