@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use sysinfo::System;
 
+use crate::collectors::gpu::{self, GpuStats};
 use crate::collectors::network::{ApiCallEntry, NetworkCollector, NetworkStatus};
 use crate::collectors::process::{self, ProcessSnapshot, format_uptime};
 use crate::storage::RingBuffer;
@@ -115,6 +116,8 @@ pub struct App {
     pub refresh_interval: Duration,
     pub network_entries: Vec<NetworkEntry>,
     pub network_status: NetworkStatus,
+    /// Most recent GPU stats (None if not available on this platform/machine)
+    pub gpu: Option<GpuStats>,
     /// Historical snapshots for sparkline rendering (last 60 samples ≈ 1 minute @1 fps)
     pub history: RingBuffer<SystemSnapshot>,
     last_refresh: Instant,
@@ -140,6 +143,7 @@ impl App {
             refresh_interval: Duration::from_secs(1),
             network_entries: Vec::new(),
             network_status: NetworkStatus::Active,
+            gpu: None,
             history: RingBuffer::new(60),
             last_refresh: Instant::now(),
             sys,
@@ -222,6 +226,10 @@ impl App {
         self.network_entries.sort_by(|a, b| b.rx_records.cmp(&a.rx_records));
 
         self.network_status = self.net.status();
+
+        // GPU stats (best-effort; runs a subprocess so only do this every ~2 s)
+        // We call it on every refresh (1 s interval); the subprocess is fast on most systems.
+        self.gpu = gpu::collect();
 
         // Record history snapshot for sparkline rendering
         let mem_ratio = self.mem_used_mb as f64 / self.mem_total_mb.max(1) as f64;

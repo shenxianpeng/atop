@@ -48,6 +48,7 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .margin(0)
         .split(inner);
@@ -138,6 +139,42 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
     let sparkline = ratatui::widgets::Paragraph::new(Line::from(spans));
     frame.render_widget(sparkline, rows[3]);
+
+    // GPU row (if data is available on this platform)
+    if let Some(ref gpu) = app.gpu {
+        let gpu_color = if gpu.utilization_pct > 80.0 {
+            Color::Red
+        } else if gpu.utilization_pct > 50.0 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        let vram_label = if gpu.vram_total_mb > 0 {
+            format!(
+                "  VRAM {}/{}MB",
+                gpu.vram_used_mb, gpu.vram_total_mb
+            )
+        } else if gpu.vram_used_mb > 0 {
+            format!("  VRAM {}MB alloc", gpu.vram_used_mb)
+        } else {
+            String::new()
+        };
+        let gpu_line = ratatui::widgets::Paragraph::new(Line::from(vec![
+            Span::raw("GPU   "),
+            Span::styled(
+                format!("{:5.1}%{}", gpu.utilization_pct, vram_label),
+                Style::default().fg(gpu_color),
+            ),
+        ]));
+        frame.render_widget(gpu_line, rows[4]);
+    } else {
+        // No GPU data: show a dim placeholder so the row isn't blank
+        let placeholder = ratatui::widgets::Paragraph::new(Line::from(vec![
+            Span::raw("GPU   "),
+            Span::styled("n/a", Style::default().fg(Color::DarkGray)),
+        ]));
+        frame.render_widget(placeholder, rows[4]);
+    }
 }
 
 fn draw_process_table(
