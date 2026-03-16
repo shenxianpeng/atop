@@ -230,8 +230,8 @@ fn draw_network_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
         lines.push(Line::from(vec![
             Span::styled(
                 format!(
-                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8} {:>7} {:>7}",
-                    "PID", "AGENT", "DOMAIN", "CONNS", "RX_RECS", "~TOKENS", "~$COST", "LAT_MS"
+                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8} {:>7} {:>7} {:>6}",
+                    "PID", "AGENT", "DOMAIN", "CONNS", "RX_RECS", "~TOKENS", "~$COST", "LAT_MS", "RPM"
                 ),
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
@@ -244,9 +244,14 @@ fn draw_network_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
             } else {
                 entry.last_latency_ms.to_string()
             };
+            let rpm_str = if entry.rpm < 0.05 {
+                "-".to_string()
+            } else {
+                format!("{:.1}", entry.rpm)
+            };
             lines.push(Line::from(vec![Span::styled(
                 format!(
-                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8} {:>7} {:>7}",
+                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8} {:>7} {:>7} {:>6}",
                     entry.pid,
                     truncate(&entry.agent_name, 16),
                     entry.domain,
@@ -255,6 +260,7 @@ fn draw_network_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                     entry.est_tokens,
                     format!("${:.4}", entry.est_cost_usd),
                     lat_str,
+                    rpm_str,
                 ),
                 Style::default().fg(Color::Cyan),
             )]));

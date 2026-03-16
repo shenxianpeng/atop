@@ -78,6 +78,8 @@ pub struct NetworkEntry {
     pub est_cost_usd: f64,
     /// Last measured API response latency in milliseconds (0 = not yet measured)
     pub last_latency_ms: u64,
+    /// Requests per minute over the last 60-second window (0.0 = not yet computed)
+    pub rpm: f64,
 }
 
 /// Approximate output token price per 1 000 tokens for each AI API domain.
@@ -202,6 +204,7 @@ impl App {
                     est_tokens,
                     est_cost_usd,
                     last_latency_ms: e.stats.last_latency_ms,
+                    rpm: e.stats.rpm,
                 }
             })
             .collect();

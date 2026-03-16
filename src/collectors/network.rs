@@ -17,7 +17,7 @@ const AI_DOMAINS: &[&str] = &[
 ];
 
 /// Aggregated traffic metrics per (pid, domain) pair
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct ApiStats {
     /// Number of TLS ClientHellos observed (new connection handshakes)
     pub connections: u64,
@@ -27,6 +27,23 @@ pub struct ApiStats {
     pub rx_bytes: u64,
     /// Latency of the most recent request–response cycle in milliseconds (0 = not yet measured)
     pub last_latency_ms: u64,
+    /// Computed API response rate in requests per minute (over the last 60 s window)
+    pub rpm: f64,
+    /// (window_start, rx_records_at_window_start) — used to compute rpm
+    rpm_window: Option<(Instant, u64)>,
+}
+
+impl Default for ApiStats {
+    fn default() -> Self {
+        Self {
+            connections: 0,
+            rx_records: 0,
+            rx_bytes: 0,
+            last_latency_ms: 0,
+            rpm: 0.0,
+            rpm_window: None,
+        }
+    }
 }
 
 /// Snapshot entry returned by NetworkCollector::snapshot()
@@ -232,6 +249,22 @@ fn capture_loop(inner: Arc<Mutex<Inner>>) {
                             });
                             if let Some((pid, domain, latency_ms)) = conn_info {
                                 let e = g.stats.entry((pid, domain)).or_default();
+                                // RPM: update 60-second sliding window
+                                match e.rpm_window {
+                                    None => {
+                                        // Start the first window
+                                        e.rpm_window = Some((Instant::now(), e.rx_records));
+                                    }
+                                    Some((ref window_start, window_records)) => {
+                                        let elapsed = window_start.elapsed();
+                                        if elapsed.as_secs() >= 60 {
+                                            // Window expired: compute rate, reset window
+                                            let delta = e.rx_records - window_records;
+                                            e.rpm = delta as f64 / elapsed.as_secs_f64() * 60.0;
+                                            e.rpm_window = Some((Instant::now(), e.rx_records));
+                                        }
+                                    }
+                                }
                                 e.rx_records += 1;
                                 e.rx_bytes += record_len;
                                 if let Some(ms) = latency_ms {
