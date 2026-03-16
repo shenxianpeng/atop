@@ -25,6 +25,8 @@ pub struct ApiStats {
     pub rx_records: u64,
     /// Total payload bytes received from the server
     pub rx_bytes: u64,
+    /// Latency of the most recent request–response cycle in milliseconds (0 = not yet measured)
+    pub last_latency_ms: u64,
 }
 
 /// Snapshot entry returned by NetworkCollector::snapshot()
@@ -47,6 +49,9 @@ pub enum NetworkStatus {
 struct TrackedConn {
     pid: u32,
     domain: &'static str,
+    /// Wall-clock time when the most recent outgoing Application Data was sent.
+    /// Set when we see outgoing 0x17 with no pending measurement; cleared on first response.
+    pending_since: Option<Instant>,
 }
 
 struct Inner {
@@ -162,7 +167,7 @@ fn capture_loop(inner: Arc<Mutex<Inner>>) {
                         if let Some(&domain) = ai_ips.get(&remote_ip) {
                             g.active_conns
                                 .entry(entry.local_port)
-                                .or_insert(TrackedConn { pid: entry.pid, domain });
+                                .or_insert(TrackedConn { pid: entry.pid, domain, pending_since: None });
                         }
                     }
                 }
@@ -190,30 +195,48 @@ fn capture_loop(inner: Arc<Mutex<Inner>>) {
                 }
 
                 if is_outgoing {
-                    // Detect new TLS connections via ClientHello SNI
                     if let Some(sni) = extract_tls_sni(info.payload) {
+                        // ClientHello: register a new tracked connection
                         if let Some(&domain) =
                             AI_DOMAINS.iter().find(|&&d| sni.eq_ignore_ascii_case(d))
                         {
                             let pid = port_pid.get(&local_port).copied().unwrap_or(0);
                             let mut g = inner.lock().unwrap();
-                            g.active_conns.insert(local_port, TrackedConn { pid, domain });
+                            g.active_conns.insert(local_port, TrackedConn { pid, domain, pending_since: None });
                             g.stats.entry((pid, domain)).or_default().connections += 1;
+                        }
+                    } else if info.payload.len() >= 1 && info.payload[0] == 0x17 {
+                        // Outgoing Application Data: start latency timer if not already running
+                        if let Ok(mut g) = inner.lock() {
+                            if let Some(conn) = g.active_conns.get_mut(&local_port) {
+                                if conn.pending_since.is_none() {
+                                    conn.pending_since = Some(Instant::now());
+                                }
+                            }
                         }
                     }
                 } else if is_incoming {
                     // Count TLS Application Data records arriving from the AI server
                     let payload = info.payload;
                     if payload.len() >= 5 && payload[0] == 0x17 {
-                        let record_len =
-                            u16::from_be_bytes([payload[3], payload[4]]) as u64;
+                        let record_len = u16::from_be_bytes([payload[3], payload[4]]) as u64;
                         if let Ok(mut g) = inner.lock() {
-                            if let Some(conn) = g.active_conns.get(&local_port) {
-                                let pid = conn.pid;
-                                let domain = conn.domain;
+                            // Extract conn info and take pending_since in one mutable borrow
+                            let conn_info = g.active_conns.get_mut(&local_port).map(|conn| {
+                                let latency_ms = conn.pending_since.take().and_then(|t| {
+                                    let ms = t.elapsed().as_millis() as u64;
+                                    // Discard stale measurements (> 30 s)
+                                    if ms <= 30_000 { Some(ms) } else { None }
+                                });
+                                (conn.pid, conn.domain, latency_ms)
+                            });
+                            if let Some((pid, domain, latency_ms)) = conn_info {
                                 let e = g.stats.entry((pid, domain)).or_default();
                                 e.rx_records += 1;
                                 e.rx_bytes += record_len;
+                                if let Some(ms) = latency_ms {
+                                    e.last_latency_ms = ms;
+                                }
                             }
                         }
                     }

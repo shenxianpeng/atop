@@ -76,6 +76,8 @@ pub struct NetworkEntry {
     pub est_tokens: u64,
     /// Estimated cost in USD based on domain pricing
     pub est_cost_usd: f64,
+    /// Last measured API response latency in milliseconds (0 = not yet measured)
+    pub last_latency_ms: u64,
 }
 
 /// Approximate output token price per 1 000 tokens for each AI API domain.
@@ -199,6 +201,7 @@ impl App {
                     rx_bytes: e.stats.rx_bytes,
                     est_tokens,
                     est_cost_usd,
+                    last_latency_ms: e.stats.last_latency_ms,
                 }
             })
             .collect();

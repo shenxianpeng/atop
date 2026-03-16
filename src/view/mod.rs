@@ -230,8 +230,8 @@ fn draw_network_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
         lines.push(Line::from(vec![
             Span::styled(
                 format!(
-                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8} {:>7}",
-                    "PID", "AGENT", "DOMAIN", "CONNS", "RX_RECS", "~TOKENS", "~$COST"
+                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8} {:>7} {:>7}",
+                    "PID", "AGENT", "DOMAIN", "CONNS", "RX_RECS", "~TOKENS", "~$COST", "LAT_MS"
                 ),
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
@@ -239,9 +239,14 @@ fn draw_network_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
         // One row per (pid, domain); reserve 1 line for the estimate note
         let max_rows = inner.height.saturating_sub(3) as usize;
         for entry in app.network_entries.iter().take(max_rows) {
+            let lat_str = if entry.last_latency_ms == 0 {
+                "-".to_string()
+            } else {
+                entry.last_latency_ms.to_string()
+            };
             lines.push(Line::from(vec![Span::styled(
                 format!(
-                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8} {:>7}",
+                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8} {:>7} {:>7}",
                     entry.pid,
                     truncate(&entry.agent_name, 16),
                     entry.domain,
@@ -249,6 +254,7 @@ fn draw_network_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                     entry.rx_records,
                     entry.est_tokens,
                     format!("${:.4}", entry.est_cost_usd),
+                    lat_str,
                 ),
                 Style::default().fg(Color::Cyan),
             )]));
