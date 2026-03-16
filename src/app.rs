@@ -69,8 +69,23 @@ pub struct NetworkEntry {
     pub connections: u64,
     /// TLS Application Data records received from server (proxy for API responses)
     pub rx_records: u64,
-    /// Total bytes received from server
+    /// Total bytes received from server (used for token/cost estimation and future latency tracking)
+    #[allow(dead_code)]
     pub rx_bytes: u64,
+    /// Estimated output tokens (rx_bytes / 4 — rough approximation)
+    pub est_tokens: u64,
+    /// Estimated cost in USD based on domain pricing
+    pub est_cost_usd: f64,
+}
+
+/// Approximate output token price per 1 000 tokens for each AI API domain.
+fn price_per_1k(domain: &str) -> f64 {
+    match domain {
+        "api.anthropic.com"              => 0.015, // claude-sonnet approximate
+        "api.openai.com"                 => 0.010, // gpt-4o approximate
+        "generativelanguage.googleapis.com" => 0.007, // gemini-1.5-pro approximate
+        _                                => 0.010,
+    }
 }
 
 /// Global application state
@@ -82,6 +97,8 @@ pub struct App {
     pub mem_total_mb: u64,
     pub swap_used_mb: u64,
     pub swap_total_mb: u64,
+    /// System load averages: (1 min, 5 min, 15 min)
+    pub load_avg: (f64, f64, f64),
     pub processes: Vec<ProcessEntry>,
     pub sort_key: SortKey,
     pub refresh_interval: Duration,
@@ -104,6 +121,7 @@ impl App {
             mem_total_mb: 0,
             swap_used_mb: 0,
             swap_total_mb: 0,
+            load_avg: (0.0, 0.0, 0.0),
             processes: Vec::new(),
             sort_key: SortKey::Cpu,
             refresh_interval: Duration::from_secs(1),
@@ -142,6 +160,8 @@ impl App {
         self.mem_total_mb = self.sys.total_memory() / 1024 / 1024;
         self.swap_used_mb = self.sys.used_swap() / 1024 / 1024;
         self.swap_total_mb = self.sys.total_swap() / 1024 / 1024;
+        let la = sysinfo::System::load_average();
+        self.load_avg = (la.one, la.five, la.fifteen);
 
         let snapshots = process::collect(&self.sys);
         self.processes = snapshots.iter().map(ProcessEntry::from).collect();
@@ -168,6 +188,8 @@ impl App {
                     })
                     .unwrap_or(if e.pid == 0 { "unknown" } else { "other" })
                     .to_string();
+                let est_tokens = e.stats.rx_bytes / 4;
+                let est_cost_usd = (est_tokens as f64 / 1000.0) * price_per_1k(e.domain);
                 NetworkEntry {
                     pid: e.pid,
                     agent_name,
@@ -175,6 +197,8 @@ impl App {
                     connections: e.stats.connections,
                     rx_records: e.stats.rx_records,
                     rx_bytes: e.stats.rx_bytes,
+                    est_tokens,
+                    est_cost_usd,
                 }
             })
             .collect();

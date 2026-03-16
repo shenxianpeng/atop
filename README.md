@@ -26,18 +26,28 @@
 Stop wondering what Cursor, Copilot, or Claude Code are doing in the background. **atop** tells you exactly.
 
 ```
-┌─ atop — AI Agent Monitor ──────────────────────────────────────────────────────┐
-│ CPU: 34.2%   MEM: 11.4 / 32.0 GB                              [F5] Refresh     │
-├────────────────────────────────────────────────────────────────────────────────┤
-│ PID     AGENT           CPU%   MEM(MB)   DISK R   DISK W   UPTIME              │
-│ 4821  ▶ Cursor          18.3%   1,204     0 KB/s   2 KB/s   2h 14m             │
-│ 7103  ▶ Claude Code      6.1%     412     0 KB/s   0 KB/s   47m                │
-│ 3309    Code Helper       2.4%     309     0 KB/s   0 KB/s   3h 02m            │
-├─ API Traffic ──────────────────────────────────────────────────────────────────┤
-│ AGENT          DOMAIN                    CONNS   RESPONSES   RX BYTES          │
-│ Cursor         api.openai.com              142         138     4.1 MB          │
-│ Claude Code    api.anthropic.com            89          87     2.8 MB          │
-└────────────────────────────────────────────────────────────────────────────────┘
+┌ atop — AI Agent Monitor ──────────────────────────────────────────────────────────────┐
+│CPU   18.3% ███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
+│MEM   35.6%  11627/32768MB                                                             │
+│LOAD  1.24  0.98  0.87  (1/5/15 min)                                                   │
+│CORES ▄▂▅▁▃▆▂▄▁▂▃▅▄▂▁▃▄▂▅▁▃▆▂▄                                                        │
+└───────────────────────────────────────────────────────────────────────────────────────┘
+┌ Processes ────────────────────────────────────────────────────────────────────────────┐
+│PID     NAME                 AGENT            CPU% ▼  MEM(MB)  RD_KB/s  WR_KB/s  UPTIME│
+│4821    Cursor               Cursor            18.3    1204     -        2        2h14m │
+│7103    claude               Claude Code        6.1     412     -        -        47m   │
+│9204    Code Helper          VS Code            2.4     309     -        -        3h02m │
+│3801    copilot-agent        GitHub Copilot     1.2     198     -        1        1h33m │
+│1042    kernel_task          -                  0.8    4096     -        -        14h21m│
+└───────────────────────────────────────────────────────────────────────────────────────┘
+┌ AI API Traffic (pcap active) ─────────────────────────────────────────────────────────┐
+│PID     AGENT            DOMAIN                               CONNS  RX_RECS  ~TOKENS  ~$COST│
+│4821    Cursor           api.openai.com                         142      138     8960  $0.1344│
+│7103    Claude Code      api.anthropic.com                       89       87     5632  $0.0845│
+│3801    GitHub Copilot   api.openai.com                          34       31     2016  $0.0302│
+│  ~ output token estimate (rx_bytes÷4); prices approximate                             │
+└───────────────────────────────────────────────────────────────────────────────────────┘
+ q:Quit  ↑↓:Select  F5:Refresh  F6:Sort
 ```
 
 ---

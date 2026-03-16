@@ -16,7 +16,7 @@ pub fn draw(frame: &mut Frame, app: &App, table_state: &mut TableState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6),  // summary (CPU gauge + MEM gauge + per-core sparkline)
+            Constraint::Length(7),  // summary (CPU gauge + MEM gauge + per-core sparkline + load avg)
             Constraint::Min(0),     // process table
             Constraint::Length(7),  // API call panel
             Constraint::Length(1),  // status bar
@@ -40,7 +40,12 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .margin(0)
         .split(inner);
 
@@ -84,6 +89,25 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .gauge_style(Style::default().fg(mem_color));
     frame.render_widget(mem_gauge, rows[1]);
 
+    // Load average line
+    let (la1, la5, la15) = app.load_avg;
+    let load_color = if la1 > app.cpu_cores.len() as f64 {
+        Color::Red
+    } else if la1 > app.cpu_cores.len() as f64 * 0.7 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+    let load_line = ratatui::widgets::Paragraph::new(Line::from(vec![
+        Span::raw("LOAD  "),
+        Span::styled(
+            format!("{:.2}  {:.2}  {:.2}", la1, la5, la15),
+            Style::default().fg(load_color),
+        ),
+        Span::styled("  (1/5/15 min)", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(load_line, rows[2]);
+
     // Per-core CPU sparkline: one Unicode block per core, colored by load
     let mut spans: Vec<Span> = vec![Span::raw("CORES ")];
     for &pct in &app.cpu_cores {
@@ -98,7 +122,7 @@ fn draw_summary(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         spans.push(Span::styled(block, Style::default().fg(color)));
     }
     let sparkline = ratatui::widgets::Paragraph::new(Line::from(spans));
-    frame.render_widget(sparkline, rows[2]);
+    frame.render_widget(sparkline, rows[3]);
 }
 
 fn draw_process_table(
@@ -206,28 +230,34 @@ fn draw_network_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
         lines.push(Line::from(vec![
             Span::styled(
                 format!(
-                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8}",
-                    "PID", "AGENT", "DOMAIN", "CONNS", "RX_RECS", "RX_KB"
+                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8} {:>7}",
+                    "PID", "AGENT", "DOMAIN", "CONNS", "RX_RECS", "~TOKENS", "~$COST"
                 ),
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
         ]));
-        // One row per (pid, domain); show at most inner.height-2 rows (header + border)
-        let max_rows = inner.height.saturating_sub(2) as usize;
+        // One row per (pid, domain); reserve 1 line for the estimate note
+        let max_rows = inner.height.saturating_sub(3) as usize;
         for entry in app.network_entries.iter().take(max_rows) {
             lines.push(Line::from(vec![Span::styled(
                 format!(
-                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8}",
+                    "{:<7} {:<16} {:<35} {:>6} {:>8} {:>8} {:>7}",
                     entry.pid,
                     truncate(&entry.agent_name, 16),
                     entry.domain,
                     entry.connections,
                     entry.rx_records,
-                    entry.rx_bytes / 1024,
+                    entry.est_tokens,
+                    format!("${:.4}", entry.est_cost_usd),
                 ),
                 Style::default().fg(Color::Cyan),
             )]));
         }
+        // Estimate note
+        lines.push(Line::from(Span::styled(
+            "  ~ output token estimate (rx_bytes÷4); prices approximate",
+            Style::default().fg(Color::DarkGray),
+        )));
     }
 
     let para = Paragraph::new(lines);
